@@ -6,7 +6,7 @@ import SortSelector from "./components/SortSelector";
 import AnalysisModal from "./components/AnalysisModal";
 import StockDetails from "./components/StockDetails";
 
-const BASE_URL = "https://stock-market-dash-production.up.railway.app/api";
+const BASE_URL = "https://stock-market-dash-9wgq.onrender.com](https://stock-market-dash-9wgq.onrender.com";
 
 const App = () => {
   const [stocks, setStocks] = useState([]);
