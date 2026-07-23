@@ -3,15 +3,14 @@ import FinancialChart from "./FinancialChart";
 
 const StockDetails = ({ details, loading }) => {
   if (loading)
-    return <div className="details-panel loading">Φόρτωση δεδομένων...</div>;
+    return <div className="details-panel loading">Loading data...</div>;
 
   if (!details) {
     return (
       <div className="details-panel empty">
-        <h3>Επίλεξε μια μετοχή</h3>
+        <h3>Select a stock</h3>
         <p>
-          Κάνε κλικ σε μια κάρτα αριστερά για να δεις τα οικονομικά της
-          στοιχεία.
+          Click on a card on the left to see the financial data of the stock.
         </p>
       </div>
     );

@@ -8,7 +8,7 @@ const AnalysisModal = ({ isOpen, onClose, analysis, loading, symbol }) => {
     <div className="modal-overlay" style={styles.overlay}>
       <div className="modal-content" style={styles.content}>
         <div style={styles.header}>
-          <h2>🤖 AI Ανάλυση: {symbol}</h2>
+          <h2>🤖 AI Analysis: {symbol}</h2>
           <button onClick={onClose} style={styles.closeBtn}>
             X
           </button>
@@ -17,9 +17,9 @@ const AnalysisModal = ({ isOpen, onClose, analysis, loading, symbol }) => {
         <div style={styles.body}>
           {loading ? (
             <div style={{ textAlign: "center", padding: "40px 20px" }}>
-              <p style={{ fontSize: "1.2rem" }}>🧠 Ο Gemini σκέφτεται...</p>
+              <p style={{ fontSize: "1.2rem" }}>🧠 The Groq is thinking...</p>
               <p style={{ color: "#666" }}>
-                Διαβάζει τα δεδομένα για την {symbol}...
+                Reading the data for {symbol}...
               </p>
             </div>
           ) : (

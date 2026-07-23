@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yfinance as yf
-import google.generativeai as genai
+from groq import Groq
 import json
 import os
 import concurrent.futures # Για παράλληλη εκτέλεση (Ταχύτητα!)
@@ -17,20 +17,18 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# --- 1. ΡΥΘΜΙΣΗ GEMINI ---
-# ΠΡΟΣΟΧΗ: Στο .env αρχείο σου πρέπει να έχεις: GOOGLE_API_KEY=το_κλειδι_σου
-# Αντί για VITE_API_URL, προτείνω να το ονομάσεις GOOGLE_API_KEY για να είναι ξεκάθαρο ότι είναι backend secret.
-GOOGLE_API_KEY = os.getenv("VITE_API_URL")
+# --- 1. ΡΥΘΜΙΣΗ GROQ ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = None
 
-if not GOOGLE_API_KEY:
-    print("--> ⚠️ WARNING: Δεν βρέθηκε GOOGLE_API_KEY στο .env file!")
+if not GROQ_API_KEY:
+    print("--> ⚠️ WARNING: Δεν βρέθηκε GROQ_API_KEY στο .env file!")
 else:
     try:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel('gemini-flash-latest')
-        print("--> Gemini AI Configured Successfully!")
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        print("--> Groq AI Configured Successfully!")
     except Exception as e:
-        print(f"--> Warning: Gemini AI setup failed: {e}")
+        print(f"--> Warning: Groq AI setup failed: {e}")
 
 # --- ΒΟΗΘΗΤΙΚΗ ΣΥΝΑΡΤΗΣΗ ΓΙΑ THREADING ---
 # Αυτή η συνάρτηση τρέχει παράλληλα για κάθε μετοχή
@@ -99,69 +97,183 @@ def analyze_stock():
     try:
         req_data = request.json
         symbol = req_data.get('symbol')
-        print(f"--> Deep Analyzing {symbol}...")
-        
+        print(f"--> Deep Analyzing {symbol} with Groq...")
+
         ticker = yf.Ticker(symbol)
         info = ticker.info
         hist = ticker.history(period="3mo")
-        
-        def get_safe(key, default=0):
-            val = info.get(key, default)
+
+        def get_safe(key, default="N/A"):
+            val = info.get(key)
             return val if val is not None else default
 
+            # ΝΕΑ βοηθητική συνάρτηση για τα ποσοστά
+        def format_margin(val):
+            if isinstance(val, (int, float)):
+                return f"{round(val * 100, 2)}%"
+            return "N/A"
+
+        def format_market_cap(val):
+            if isinstance(val, (int, float)):
+                if val >= 1_000_000_000_000:
+                    return f"${round(val / 1_000_000_000_000, 2)}T"
+                elif val >= 1_000_000_000:
+                    return f"${round(val / 1_000_000_000, 2)}B"
+                elif val >= 1_000_000:
+                    return f"${round(val / 1_000_000, 2)}M"
+                else:
+                    return f"${val:,.2f}"
+            return "N/A"
+
         peg_ratio = get_safe('pegRatio', None)
-        if peg_ratio is None:
-            fwd_pe = get_safe('forwardPE')
-            growth = get_safe('earningsGrowth')
+        if peg_ratio is None or peg_ratio == "N/A":
+            fwd_pe = info.get('forwardPE')
+            growth = info.get('earningsGrowth')
             if fwd_pe and growth and growth > 0:
                 peg_ratio = round(fwd_pe / (growth * 100), 2)
             else:
                 peg_ratio = "N/A"
+
+        officers = info.get('companyOfficers', [])
+        ceo_name = "N/A"
+        for officer in officers:
+            title = officer.get('title', '').lower()
+            if 'ceo' in title or 'chief executive' in title:
+                ceo_name = officer.get('name', 'N/A')
+                break
+
+        raw_news = ticker.news
+        latest_news = []
+        for item in (raw_news or [])[:3]:
+            news_title = item.get('title') or item.get('content', {}).get('title')
+            if news_title:
+                latest_news.append(news_title)
+        if not latest_news:
+            latest_news = ["No recent news found."]
 
         current_price = get_safe('currentPrice')
         raw_trend = hist['Close'].tail(5).tolist() if not hist.empty else []
         recent_trend = [float(round(x, 2)) for x in raw_trend]
 
         financial_data = {
-            "Symbol": symbol,
-            "Price": current_price,
-            "Sector": info.get('sector', 'Unknown'),
-            "Description": info.get('longBusinessSummary', '')[:500],
+            "Company Info": {
+                "Symbol": symbol,
+                "Name": get_safe('shortName', symbol),
+                "Sector": get_safe('sector', 'Unknown'),
+                "Industry": get_safe('industry', 'Unknown'),
+                "Country": get_safe('country', 'Unknown'),
+                "Employees": get_safe('fullTimeEmployees'),
+                "CEO": ceo_name,
+                "Description": get_safe('longBusinessSummary', '')[:800],
+            },
+            "Market Data": {
+                "Price": current_price,
+                "Market Cap": format_market_cap(get_safe('marketCap', None)),
+            },
+            "Recent News": latest_news,
             "Valuation": {
-                "Trailing PE": get_safe('trailingPE', 'N/A'), 
-                "PEG": peg_ratio
+                "P/E (Trailing)": get_safe('trailingPE'),
+                "F. P/E (Forward)": get_safe('forwardPE'),
+                "PEG": peg_ratio,
+                "P/S (Price to Sales)": get_safe('priceToSalesTrailing12Months'),
+                "P/B (Price to Book)": get_safe('priceToBook'),
+            },
+            "Profitability & Margins": {
+                "Gross Margin": get_safe('grossMargins'),
+                "Operating Margin": get_safe('operatingMargins'),
+                "Profit Margin": get_safe('profitMargins'),
+            },
+            "Cash Flow & Debt": {
+                "Free Cash Flow": get_safe('freeCashflow'),
+                "Total Cash": get_safe('totalCash'),
+                "Total Debt": get_safe('totalDebt'),
+            },
+            "Growth & Quarterly Performance": {
+                "Revenue Growth (Annual)": get_safe('revenueGrowth'),
+                "Earnings Growth (Annual)": get_safe('earningsGrowth'),
+                "Quarterly Revenue Growth": get_safe('quarterlyRevenueGrowth'),
+                "Quarterly Earnings Growth": get_safe('quarterlyEarningsGrowth'),
             },
             "Analysts": {
-                "Target": get_safe('targetMeanPrice', 'N/A'), 
-                "Rec": info.get('recommendationKey', 'N/A')
+                "Target Price": get_safe('targetMeanPrice'),
+                "Recommendation": get_safe('recommendationKey'),
             },
             "Technical": {
-                "200 Day MA": float(get_safe('twoHundredDayAverage')),
-                "Trend": recent_trend
-            }
+                "200 Day MA": get_safe('twoHundredDayAverage'),
+                "5-Day Trend": recent_trend,
+            },
         }
 
         prompt = f"""
-        Ενέργησε ως Senior Investment Analyst. Κάνε μια επενδυτική έκθεση για τη μετοχή **{symbol}**.
-        ΔΕΔΟΜΕΝΑ: {json.dumps(financial_data)}
-        
-        Ακολούθησε ΑΥΣΤΗΡΑ αυτή τη δομή (Markdown):
-        ## 1. 🏢 Εισαγωγή
-        - Τι κάνει η εταιρεία; ({info.get('sector', 'N/A')})
-        ## 2. 🛡️ Οικονομική Υγεία & Valuation
-        - Είναι φθηνή; (P/E, PEG).
-        ## 3. 🔮 Πρόβλεψη & Στόχοι
-        - Στόχος Τιμής: ${financial_data['Analysts']['Target']} (Τρέχουσα: ${current_price}).
-        ## 4. 📉 Τεχνική Εικόνα
-        - Τάση 5 ημερών: {recent_trend}.
-        ## 5. 🎲 Σενάρια (Bear/Bull)
-        
-        # 🎯 ΣΥΜΠΕΡΑΣΜΑ: [BUY / HOLD / SELL]
-        Δικαιολόγησε σε 2 προτάσεις.
+        Act as a Senior Investment Analyst. You are given the following comprehensive financial data for **{symbol}**.
+
+        DATA (JSON):
+        {json.dumps(financial_data, ensure_ascii=False, indent=2)}
+
+        Write a professional investment report in English. 
+        CRITICAL INSTRUCTIONS:
+        1. You MUST include all 8 sections listed below. DO NOT skip any section.
+        2. You MUST use Markdown headers (##) and bullet points (*) exactly as formatted below.
+        3. Use the provided JSON data to answer the guiding questions. If a field is "N/A" or missing, explicitly state "Data not available" and move on. NEVER invent numbers.
+
+        # Investment Analysis: {symbol}
+
+        ## 1) Initial Overview
+        * **Description:** What exactly does the company do? (Use Sector, Industry, Country, and Description).
+        * **Key Stats:** Present Market Cap, Current Price, and Employee count.
+
+        ## 2) Financial Presentation & Momentum
+        * **Quarterly Performance:** Comment on Quarterly Revenue and Earnings Growth. Is there acceleration or deceleration?
+        * **Liquidity & Debt:** Compare Total Cash vs Total Debt. Is Free Cash Flow positive? What does this mean for its financial safety?
+        * **Recent Catalysts:** Based on recent news headlines, what is the current narrative around the company?
+        * **Trend & Moving Average:** Where is the price relative to the 200-day MA, and how has it moved over the last 5 days?
+
+        ## 3) Future Estimates by Analysts
+        * **Target & Recommendation:** What is the mean price target, implied upside/downside, and overall analyst recommendation?
+
+        ## 4) The 5-Year Estimates (Expected ROI)
+        * **Growth Projections:** Based on historical growth rates and current valuation (PEG Ratio), estimate the stock's 3-5 year potential. Does it show strong future ROI capabilities?
+
+        ## 5) Stock Valuation Metrics Check
+        (For each metric below, state the number then explain "The Reality" - what it means in practice):
+        * **P/E & Forward P/E:** Compare both. Is the stock getting cheaper on a forward basis?
+        * **P/S & P/B:** Are these multiples reasonable for the industry?
+        * **Profit Margins:** Present and comment on Gross Margin, Operating Margin, and Profit Margin. Are they healthy?
+
+        ## 6) Value Comparison (Competition & Industry)
+        * **Peers:** Identify the 2-3 main global competitors in its sector. What is this company's comparative advantage over them?
+
+        ## 7) Management & Leadership
+        * **Leadership:** Who is the CEO? Briefly comment on the importance of stable leadership for this company.
+
+        ## 8) Economic Moat & Competitive Advantage
+        * **Create & Capture Value:** How does the company create value in its industry?
+        * **Moat Sources:** What competitive advantages might it have (e.g., Network Effects, Switching Costs, Scale)?
+
+        ---
+        **# 🎯 FINAL VERDICT & RECOMMENDATION: [BUY / HOLD / SELL]**
+        Based on all of the above (Valuation, Cash Flows, Momentum, and Competitive Advantage), give a final, rigorous 3-4 sentence justification for your recommendation.
         """
 
-        response = model.generate_content(prompt)
-        return jsonify({"analysis": response.text})
+        if not groq_client:
+            return jsonify({"error": "Groq API key not configured"}), 500
+
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a rigorous, professional Senior Investment Analyst. You must strictly output the requested Markdown structure. Never skip sections. Never fabricate financial data.",
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,
+        )
+
+        return jsonify({"analysis": chat_completion.choices[0].message.content})
 
     except Exception as e:
         print(f"AI Error: {e}")
