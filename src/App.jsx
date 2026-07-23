@@ -32,8 +32,8 @@ const App = () => {
       setError(null);
       try {
         let url = !filter
-          ? `${BASE_URL}/quote`
-          : `${BASE_URL}/quote?symbols=${filter}`;
+          ? `${BASE_URL}/api/quote`
+          : `${BASE_URL}/api/quote?symbols=${filter}`;
         console.log("Fetching:", url);
         const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) throw new Error("Python server error");
